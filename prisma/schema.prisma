@@ -1,0 +1,357 @@
+// Prisma schema file
+// Learn more: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum UserRole {
+  ADMIN
+  MEMBER
+}
+
+enum ContactStatus {
+  ACTIVE
+  UNSUBSCRIBED
+  BOUNCED
+  SUPPRESSED
+}
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  SENDING
+  COMPLETED
+  PAUSED
+  FAILED
+}
+
+enum CampaignRecipientStatus {
+  PENDING
+  QUEUED
+  SENDING
+  SENT
+  DELIVERED
+  OPENED
+  CLICKED
+  BOUNCED
+  FAILED
+  UNSUBSCRIBED
+  SUPPRESSED
+}
+
+enum EmailEventType {
+  SENT
+  DELIVERED
+  OPENED
+  CLICKED
+  BOUNCED
+  FAILED
+  UNSUBSCRIBED
+}
+
+enum SuppressionReason {
+  UNSUBSCRIBED
+  BOUNCED
+  COMPLAINED
+  MANUAL
+}
+
+// ---------------------------------------------------------------------------
+// Organization & Users
+// ---------------------------------------------------------------------------
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users              User[]
+  contacts           Contact[]
+  contactLists       ContactList[]
+  templates          EmailTemplate[]
+  campaigns          Campaign[]
+  suppressions       Suppression[]
+  unsubscribes       Unsubscribe[]
+  settings           Settings?
+  campaignRecipients CampaignRecipient[]
+  emailEvents        EmailEvent[]
+}
+
+model User {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  email          String   @unique
+  passwordHash   String?
+  role           UserRole @default(MEMBER)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdCampaigns Campaign[]   @relation("CampaignCreatedBy")
+
+  @@index([organizationId])
+}
+
+// ---------------------------------------------------------------------------
+// Contacts & Lists
+// ---------------------------------------------------------------------------
+
+model Contact {
+  id             String        @id @default(cuid())
+  organizationId String
+  firstName      String?
+  lastName       String?
+  email          String
+  company        String?
+  phone          String?
+  industry       String?
+  location       String?
+  status         ContactStatus @default(ACTIVE)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  listMemberships    ContactListMember[]
+  campaignRecipients CampaignRecipient[]
+  unsubscribes       Unsubscribe[]
+
+  @@unique([organizationId, email])
+  @@index([organizationId, status])
+  @@index([organizationId, industry])
+  @@index([organizationId, location])
+  @@index([organizationId, createdAt])
+}
+
+model ContactList {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  description    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  members      ContactListMember[]
+  campaigns    Campaign[]
+
+  @@index([organizationId])
+}
+
+model ContactListMember {
+  id            String   @id @default(cuid())
+  contactId     String
+  contactListId String
+  createdAt     DateTime @default(now())
+
+  contact     Contact     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  contactList ContactList @relation(fields: [contactListId], references: [id], onDelete: Cascade)
+
+  @@unique([contactListId, contactId])
+  @@index([contactId])
+}
+
+// ---------------------------------------------------------------------------
+// Templates
+// ---------------------------------------------------------------------------
+
+model EmailTemplate {
+  id             String   @id @default(cuid())
+  organizationId String
+  name           String
+  subject        String
+  previewText    String?
+  htmlContent    String
+  textContent    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  campaigns    Campaign[]
+
+  @@index([organizationId])
+}
+
+// ---------------------------------------------------------------------------
+// Campaigns
+// ---------------------------------------------------------------------------
+
+model Campaign {
+  id             String         @id @default(cuid())
+  organizationId String
+  name           String
+  subject        String
+  status         CampaignStatus @default(DRAFT)
+
+  templateId    String?
+  contactListId String?
+  createdById   String?
+
+  scheduledAt DateTime?
+  sentAt      DateTime?
+  completedAt DateTime?
+
+  totalRecipients   Int @default(0)
+  totalSent         Int @default(0)
+  totalDelivered    Int @default(0)
+  totalOpened       Int @default(0)
+  totalClicked      Int @default(0)
+  totalBounced      Int @default(0)
+  totalFailed       Int @default(0)
+  totalUnsubscribed Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  template     EmailTemplate? @relation(fields: [templateId], references: [id], onDelete: Restrict)
+  contactList  ContactList?   @relation(fields: [contactListId], references: [id], onDelete: Restrict)
+  createdBy    User?          @relation("CampaignCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  recipients   CampaignRecipient[]
+  events       EmailEvent[]
+  unsubscribes Unsubscribe[]
+
+  @@index([organizationId, status])
+  @@index([organizationId, scheduledAt])
+}
+
+model CampaignRecipient {
+  id             String  @id @default(cuid())
+  organizationId String
+  campaignId     String
+  contactId      String?
+
+  // Snapshot at send time, so history stays accurate even if the contact changes later.
+  email     String
+  firstName String?
+  lastName  String?
+
+  status CampaignRecipientStatus @default(PENDING)
+
+  providerMessageId String?
+  retryCount        Int     @default(0)
+  lastError         String?
+
+  queuedAt       DateTime?
+  sentAt         DateTime?
+  deliveredAt    DateTime?
+  openedAt       DateTime?
+  clickedAt      DateTime?
+  bouncedAt      DateTime?
+  failedAt       DateTime?
+  unsubscribedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  campaign     Campaign     @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contact      Contact?     @relation(fields: [contactId], references: [id], onDelete: SetNull)
+
+  events EmailEvent[]
+
+  @@unique([campaignId, email])
+  @@index([organizationId, status])
+  @@index([campaignId, status])
+  @@index([contactId])
+}
+
+model EmailEvent {
+  id                  String @id @default(cuid())
+  organizationId      String
+  campaignId          String
+  campaignRecipientId String
+
+  type       EmailEventType
+  metadata   Json?
+  occurredAt DateTime       @default(now())
+
+  organization      Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  campaign          Campaign          @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  campaignRecipient CampaignRecipient @relation(fields: [campaignRecipientId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, type])
+  @@index([campaignId, type])
+  @@index([campaignRecipientId])
+  @@index([occurredAt])
+}
+
+// ---------------------------------------------------------------------------
+// Unsubscribe & Suppression
+// ---------------------------------------------------------------------------
+
+model Unsubscribe {
+  id             String   @id @default(cuid())
+  organizationId String
+  contactId      String?
+  campaignId     String?
+  email          String
+  reason         String?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  contact      Contact?     @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  campaign     Campaign?    @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId, email])
+  @@index([contactId])
+  @@index([campaignId])
+}
+
+// Standalone, durable suppression list keyed by email — checked before every
+// send regardless of whether a Contact record still exists for that address.
+model Suppression {
+  id             String            @id @default(cuid())
+  organizationId String
+  email          String
+  reason         SuppressionReason
+  source         String?
+  createdAt      DateTime          @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, email])
+  @@index([organizationId])
+}
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+// One row per organization. Never stores the provider API key — that lives
+// only in the EMAIL_PROVIDER_API_KEY environment variable.
+model Settings {
+  id             String @id @default(cuid())
+  organizationId String @unique
+
+  emailProvider String?
+  fromName      String?
+  fromEmail     String?
+  replyTo       String?
+
+  companyName    String?
+  companyAddress String?
+
+  trackOpens  Boolean @default(true)
+  trackClicks Boolean @default(true)
+
+  unsubscribeFooterText String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+}
