@@ -5,10 +5,11 @@ const prismaMock = vi.hoisted(() => {
     campaign: { findFirst: vi.fn(), findMany: vi.fn(), updateMany: vi.fn(), update: vi.fn() },
     contact: { findMany: vi.fn() },
     contactList: { findFirst: vi.fn() },
-    campaignRecipient: { createMany: vi.fn(), findMany: vi.fn(), updateMany: vi.fn(), count: vi.fn(), groupBy: vi.fn() },
+    campaignRecipient: { createMany: vi.fn(), findMany: vi.fn(), updateMany: vi.fn(), deleteMany: vi.fn(), count: vi.fn(), groupBy: vi.fn() },
     emailEvent: { create: vi.fn() },
     suppression: { findMany: vi.fn() },
     unsubscribe: { findMany: vi.fn() },
+    settings: { findUnique: vi.fn() },
     $transaction: vi.fn(),
   };
   return mock;
@@ -20,11 +21,14 @@ const providerMock = vi.hoisted(() => ({ getEmailProvider: vi.fn() }));
 vi.mock("@/db/client", () => ({ prisma: prismaMock }));
 vi.mock("@/services/email/provider", () => providerMock);
 
+import { CompanyAddressMissingError } from "@/services/settings-service";
+
 import {
   CampaignNotSendableError,
   ProviderNotConfiguredError,
   RecipientCapExceededError,
   SendingDisabledError,
+  cancelCampaign,
   prepareCampaign,
   processCampaignBatch,
 } from "@/services/campaign-send-service";
@@ -72,6 +76,7 @@ beforeEach(() => {
   prismaMock.$transaction.mockImplementation((fn: (tx: unknown) => unknown) => fn(prismaMock));
   prismaMock.suppression.findMany.mockResolvedValue([]);
   prismaMock.unsubscribe.findMany.mockResolvedValue([]);
+  prismaMock.settings.findUnique.mockResolvedValue({ companyAddress: "1 Main St" });
   prismaMock.campaignRecipient.updateMany.mockResolvedValue({ count: 1 });
   prismaMock.campaignRecipient.count.mockResolvedValue(0);
   prismaMock.campaign.updateMany.mockResolvedValue({ count: 1 });
@@ -102,6 +107,53 @@ describe("safety switches", () => {
 describe("prepareCampaign", () => {
   beforeEach(() => {
     prismaMock.campaign.findFirst.mockResolvedValue({ id: "m1", status: "DRAFT", contactListId: "l1", templateId: "t1" });
+    prismaMock.campaignRecipient.findMany.mockResolvedValue([]);
+    prismaMock.campaignRecipient.createMany.mockResolvedValue({ count: 1 });
+    prismaMock.campaignRecipient.deleteMany.mockResolvedValue({ count: 0 });
+  });
+
+  it("inserts recipients in chunks of 1000 before claiming the campaign", async () => {
+    vi.stubEnv("EMAIL_MAX_CAMPAIGN_RECIPIENTS", "5000");
+    prismaMock.contact.findMany.mockResolvedValue(
+      Array.from({ length: 2500 }, (_, i) => ({ id: `c${i}`, email: `u${i}@x.com`, firstName: null, lastName: null }))
+    );
+    const order: string[] = [];
+    prismaMock.campaignRecipient.createMany.mockImplementation(async () => { order.push("insert"); return { count: 1 }; });
+    prismaMock.campaign.updateMany.mockImplementation(async () => { order.push("claim"); return { count: 1 }; });
+
+    await expect(prepareCampaign(ORG, "m1", { provider })).resolves.toEqual({ totalRecipients: 2500 });
+
+    const sizes = prismaMock.campaignRecipient.createMany.mock.calls.map((c) => c[0].data.length);
+    expect(sizes).toEqual([1000, 1000, 500]);
+    expect(prismaMock.campaignRecipient.createMany.mock.calls.every((c) => c[0].skipDuplicates === true)).toBe(true);
+    expect(order).toEqual(["insert", "insert", "insert", "claim"]);
+    expect(prismaMock.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("is idempotent on retry and removes stale PENDING rows from a failed attempt", async () => {
+    prismaMock.contact.findMany.mockResolvedValue([{ id: "c1", email: "a@x.com", firstName: null, lastName: null }]);
+    prismaMock.campaignRecipient.findMany.mockResolvedValue([
+      { id: "r1", email: "a@x.com" },
+      { id: "r2", email: "removed@x.com" },
+    ]);
+    await expect(prepareCampaign(ORG, "m1", { provider })).resolves.toEqual({ totalRecipients: 1 });
+    expect(prismaMock.campaignRecipient.deleteMany).toHaveBeenCalledWith({
+      where: { id: { in: ["r2"] }, campaignId: "m1", status: "PENDING" },
+    });
+  });
+
+  it("does not claim the campaign if inserting recipients fails", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    prismaMock.contact.findMany.mockResolvedValue([{ id: "c1", email: "a@x.com", firstName: null, lastName: null }]);
+    prismaMock.campaignRecipient.createMany.mockRejectedValue(new Error("boom"));
+    await expect(prepareCampaign(ORG, "m1", { provider })).rejects.toThrow("boom");
+    expect(prismaMock.campaign.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("fails if another caller already claimed the campaign", async () => {
+    prismaMock.contact.findMany.mockResolvedValue([{ id: "c1", email: "a@x.com", firstName: null, lastName: null }]);
+    prismaMock.campaign.updateMany.mockResolvedValue({ count: 0 });
+    await expect(prepareCampaign(ORG, "m1", { provider })).rejects.toBeInstanceOf(CampaignNotSendableError);
   });
 
   it("snapshots eligible recipients, excluding suppressed/unsubscribed, and moves to SENDING", async () => {
@@ -145,6 +197,14 @@ describe("prepareCampaign", () => {
     expect(prismaMock.campaign.updateMany).not.toHaveBeenCalled();
   });
 
+  it("refuses to start without a company mailing address", async () => {
+    prismaMock.settings.findUnique.mockResolvedValue(null);
+    prismaMock.contact.findMany.mockResolvedValue([{ id: "c1", email: "a@x.com", firstName: null, lastName: null }]);
+    await expect(prepareCampaign(ORG, "m1", { provider })).rejects.toBeInstanceOf(CompanyAddressMissingError);
+    expect(prismaMock.campaignRecipient.createMany).not.toHaveBeenCalled();
+    expect(prismaMock.campaign.updateMany).not.toHaveBeenCalled();
+  });
+
   it("defaults the cap to 100", async () => {
     prismaMock.contact.findMany.mockResolvedValue(
       Array.from({ length: 101 }, (_, i) => ({ id: `c${i}`, email: `u${i}@x.com`, firstName: null, lastName: null }))
@@ -173,6 +233,9 @@ describe("processCampaignBatch", () => {
     expect(params.html).toContain("Hello Ada from Acme");
     expect(params.html).toContain("https://app.example.com/unsubscribe/");
     expect(params.html).toContain("BoilerTech");
+    // Tracking: open pixel added, unsubscribe link left untouched.
+    expect(params.html).toContain("https://app.example.com/api/t/o/");
+    expect(params.html).toMatch(/href="https:\/\/app.example.com\/unsubscribe\//);
     expect(params.text).toContain("Unsubscribe: https://app.example.com/unsubscribe/");
     expect(params.headers["List-Unsubscribe"]).toMatch(/^<https:\/\/app\.example\.com\/api\/unsubscribe\?token=.+>$/);
     expect(params.headers["List-Unsubscribe-Post"]).toBe("List-Unsubscribe=One-Click");
@@ -282,5 +345,38 @@ describe("processCampaignBatch", () => {
       CampaignNotSendableError
     );
     expect(prismaMock.campaign.findFirst.mock.calls[0][0].where).toEqual({ id: "m1", organizationId: ORG });
+  });
+});
+describe("cancelCampaign", () => {
+  it("cancels the campaign first, then marks pending/queued recipients CANCELLED with a note", async () => {
+    const order: string[] = [];
+    prismaMock.campaign.updateMany.mockImplementation(async () => { order.push("campaign"); return { count: 1 }; });
+    prismaMock.campaignRecipient.updateMany.mockImplementation(async () => { order.push("recipients"); return { count: 7 }; });
+
+    await expect(cancelCampaign(ORG, "m1")).resolves.toEqual({ cancelled: true, cancelledRecipients: 7 });
+
+    expect(order).toEqual(["campaign", "recipients"]);
+    expect(prismaMock.campaign.updateMany.mock.calls[0][0]).toMatchObject({
+      where: { id: "m1", organizationId: ORG, status: { in: ["DRAFT", "SCHEDULED", "SENDING", "PAUSED"] } },
+      data: { status: "CANCELLED" },
+    });
+    expect(prismaMock.campaignRecipient.updateMany.mock.calls[0][0]).toMatchObject({
+      where: { campaignId: "m1", organizationId: ORG, status: { in: ["PENDING", "QUEUED"] } },
+      data: { status: "CANCELLED", lastError: expect.stringContaining("Cancelled") },
+    });
+  });
+
+  it("refuses completed/failed/cancelled campaigns and touches no recipients", async () => {
+    prismaMock.campaign.updateMany.mockResolvedValue({ count: 0 });
+    await expect(cancelCampaign(ORG, "m1")).resolves.toEqual({ cancelled: false, cancelledRecipients: 0 });
+    expect(prismaMock.campaignRecipient.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("never sends for a CANCELLED campaign", async () => {
+    prismaMock.campaign.findFirst.mockResolvedValue({ ...sendingCampaign, status: "CANCELLED" });
+    const result = await processCampaignBatch("m1", { sleep: noSleep });
+    expect(result).toMatchObject({ sent: 0, completed: false });
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(prismaMock.campaignRecipient.findMany).not.toHaveBeenCalled();
   });
 });

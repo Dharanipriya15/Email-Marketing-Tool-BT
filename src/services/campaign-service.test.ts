@@ -13,9 +13,12 @@ const prismaMock = vi.hoisted(() => ({
   contact: { count: vi.fn(), findFirst: vi.fn() },
   suppression: { findMany: vi.fn() },
   unsubscribe: { findMany: vi.fn() },
+  settings: { findUnique: vi.fn() },
 }));
 
 vi.mock("@/db/client", () => ({ prisma: prismaMock }));
+
+import { CompanyAddressMissingError } from "@/services/settings-service";
 
 import {
   CampaignInvalidReferenceError,
@@ -40,6 +43,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   prismaMock.contactList.findFirst.mockResolvedValue({ id: "l1" });
   prismaMock.emailTemplate.findFirst.mockResolvedValue({ id: "t1" });
+  prismaMock.settings.findUnique.mockResolvedValue({ companyAddress: "1 Main St" });
   prismaMock.suppression.findMany.mockResolvedValue([]);
   prismaMock.unsubscribe.findMany.mockResolvedValue([]);
 });
@@ -162,6 +166,13 @@ describe("scheduleCampaign", () => {
   it("refuses non-draft campaigns", async () => {
     prismaMock.campaign.findFirst.mockResolvedValue({ status: "SENDING", contactListId: "l1", templateId: "t1" });
     await expect(scheduleCampaign(ORG, "c1", when)).rejects.toBeInstanceOf(CampaignNotEditableError);
+  });
+
+  it("refuses to schedule when the company address is empty", async () => {
+    prismaMock.campaign.findFirst.mockResolvedValue({ status: "DRAFT", contactListId: "l1", templateId: "t1" });
+    prismaMock.settings.findUnique.mockResolvedValue({ companyAddress: "   " });
+    await expect(scheduleCampaign(ORG, "c1", when)).rejects.toBeInstanceOf(CompanyAddressMissingError);
+    expect(prismaMock.campaign.updateMany).not.toHaveBeenCalled();
   });
 });
 

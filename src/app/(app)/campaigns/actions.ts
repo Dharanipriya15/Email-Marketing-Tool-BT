@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import type { ZodError } from "zod";
-import { requireUser } from "@/lib/auth";
+import { requireAdmin, requireUser } from "@/lib/auth";
 import {
   campaignFormSchema,
   scheduleCampaignSchema,
@@ -12,6 +12,7 @@ import {
 import * as campaignService from "@/services/campaign-service";
 import * as sendService from "@/services/campaign-send-service";
 import { EMAIL_NOT_CONFIGURED_MESSAGE } from "@/services/email/provider";
+import { CompanyAddressMissingError, MISSING_COMPANY_ADDRESS_ERROR } from "@/services/settings-service";
 import type { ActionResult } from "@/types/action";
 
 const GENERIC_ERROR = "Something went wrong. Please try again.";
@@ -24,6 +25,7 @@ function validationError(error: ZodError): string {
 // Maps known service errors to user-facing messages; unknown errors are logged.
 function serviceError(error: unknown, context: string): string {
   if (error instanceof campaignService.CampaignNotFoundError) return NOT_FOUND_ERROR;
+  if (error instanceof CompanyAddressMissingError) return MISSING_COMPANY_ADDRESS_ERROR;
   if (error instanceof campaignService.CampaignNotEditableError) {
     return error.status === "SCHEDULED"
       ? "This campaign is scheduled. Unschedule it before making changes."
@@ -93,7 +95,8 @@ export async function duplicateCampaignAction(id: string): Promise<ActionResult<
 }
 
 export async function deleteCampaignAction(id: string): Promise<ActionResult> {
-  const user = await requireUser();
+  const { user, error: adminError } = await requireAdmin();
+  if (!user) return { success: false, error: adminError };
 
   try {
     await campaignService.deleteCampaign(user.organizationId, id);
@@ -109,7 +112,8 @@ export async function deleteCampaignAction(id: string): Promise<ActionResult> {
 
 // Only marks the campaign as scheduled; no email is sent by this action.
 export async function scheduleCampaignAction(id: string, input: ScheduleCampaignInput): Promise<ActionResult> {
-  const user = await requireUser();
+  const { user, error: adminError } = await requireAdmin();
+  if (!user) return { success: false, error: adminError };
   const parsed = scheduleCampaignSchema.safeParse(input);
   if (!parsed.success) {
     return { success: false, error: validationError(parsed.error) };
@@ -125,7 +129,8 @@ export async function scheduleCampaignAction(id: string, input: ScheduleCampaign
 }
 
 export async function unscheduleCampaignAction(id: string): Promise<ActionResult> {
-  const user = await requireUser();
+  const { user, error: adminError } = await requireAdmin();
+  if (!user) return { success: false, error: adminError };
 
   try {
     await campaignService.unscheduleCampaign(user.organizationId, id);
@@ -199,7 +204,8 @@ export async function sendCampaignNowAction(
   id: string,
   confirmation: string
 ): Promise<ActionResult<SendProgressResult>> {
-  const user = await requireUser();
+  const { user, error: adminError } = await requireAdmin();
+  if (!user) return { success: false, error: adminError };
   if (confirmation !== SEND_CONFIRMATION_WORD) {
     return { success: false, error: `Type ${SEND_CONFIRMATION_WORD} to confirm.` };
   }
@@ -221,7 +227,8 @@ export async function sendCampaignNowAction(
 }
 
 export async function processNextBatchAction(id: string): Promise<ActionResult<SendProgressResult>> {
-  const user = await requireUser();
+  const { user, error: adminError } = await requireAdmin();
+  if (!user) return { success: false, error: adminError };
   try {
     const result = await sendService.processCampaignBatch(id, { organizationId: user.organizationId });
     revalidateCampaign(id);
@@ -232,7 +239,8 @@ export async function processNextBatchAction(id: string): Promise<ActionResult<S
 }
 
 export async function pauseCampaignAction(id: string): Promise<ActionResult> {
-  const user = await requireUser();
+  const { user, error: adminError } = await requireAdmin();
+  if (!user) return { success: false, error: adminError };
   try {
     const paused = await sendService.pauseCampaign(user.organizationId, id);
     revalidateCampaign(id);
@@ -243,12 +251,30 @@ export async function pauseCampaignAction(id: string): Promise<ActionResult> {
 }
 
 export async function resumeCampaignAction(id: string): Promise<ActionResult> {
-  const user = await requireUser();
+  const { user, error: adminError } = await requireAdmin();
+  if (!user) return { success: false, error: adminError };
   try {
     const resumed = await sendService.resumeCampaign(user.organizationId, id);
     revalidateCampaign(id);
     return resumed ? { success: true, data: undefined } : { success: false, error: "Only paused campaigns can be resumed." };
   } catch (error) {
     return { success: false, error: sendError(error, "resume campaign") };
+  }
+}
+
+// Permanently stops a campaign (admin only). Unsent recipients are marked
+// CANCELLED; already-sent emails are unaffected. Not reversible.
+export async function cancelCampaignAction(id: string): Promise<ActionResult<{ cancelledRecipients: number }>> {
+  const { user, error: adminError } = await requireAdmin();
+  if (!user) return { success: false, error: adminError };
+  try {
+    const result = await sendService.cancelCampaign(user.organizationId, id);
+    revalidateCampaign(id);
+    if (!result.cancelled) {
+      return { success: false, error: "Only draft, scheduled, sending or paused campaigns can be cancelled." };
+    }
+    return { success: true, data: { cancelledRecipients: result.cancelledRecipients } };
+  } catch (error) {
+    return { success: false, error: sendError(error, "cancel campaign") };
   }
 }

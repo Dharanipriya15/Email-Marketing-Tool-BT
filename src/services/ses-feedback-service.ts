@@ -1,9 +1,9 @@
-// Applies SES bounce/complaint notifications (delivered via SNS) to the DB:
+// Applies SES delivery/bounce/complaint notifications (delivered via SNS) to the DB:
 // recipient -> BOUNCED, contact -> BOUNCED, and the address is suppressed in
 // the organization that sent the message. Server-side only.
 import { prisma } from "@/db/client";
 
-type Feedback = { kind: "bounce" | "complaint"; messageId: string; emails: string[] };
+export type Feedback = { kind: "bounce" | "complaint" | "delivery"; messageId: string; emails: string[] };
 
 // Accepts both classic SES notifications (notificationType) and
 // configuration-set event publishing (eventType).
@@ -24,6 +24,10 @@ export function parseSesFeedback(raw: string): Feedback | null {
     const emails = (bounce.bouncedRecipients ?? []).map((r) => r.emailAddress ?? "").filter(Boolean);
     return { kind: "bounce", messageId, emails };
   }
+  if (type === "Delivery") {
+    const delivery = data.delivery as { recipients?: string[] } | undefined;
+    return { kind: "delivery", messageId, emails: (delivery?.recipients ?? []).filter(Boolean) };
+  }
   if (type === "Complaint") {
     const complaint = data.complaint as { complainedRecipients?: { emailAddress?: string }[] } | undefined;
     const emails = (complaint?.complainedRecipients ?? []).map((r) => r.emailAddress ?? "").filter(Boolean);
@@ -43,6 +47,21 @@ export async function applySesFeedback(feedback: Feedback): Promise<{ suppressed
   }
   const { organizationId } = recipient;
   const now = new Date();
+  const eventBase = { organizationId, campaignId: recipient.campaignId, campaignRecipientId: recipient.id, occurredAt: now };
+
+  if (feedback.kind === "delivery") {
+    // SNS can redeliver: only the first notification counts.
+    const first = await prisma.campaignRecipient.updateMany({
+      where: { id: recipient.id, deliveredAt: null },
+      data: { deliveredAt: now },
+    });
+    if (first.count > 0) {
+      await prisma.campaignRecipient.updateMany({ where: { id: recipient.id, status: "SENT" }, data: { status: "DELIVERED" } });
+      await prisma.campaign.update({ where: { id: recipient.campaignId }, data: { totalDelivered: { increment: 1 } } });
+      await prisma.emailEvent.create({ data: { ...eventBase, type: "DELIVERED" } });
+    }
+    return { suppressed: 0 };
+  }
   const emails = feedback.emails.length > 0 ? feedback.emails : [recipient.email];
   let suppressed = 0;
   for (const rawEmail of emails) {
@@ -58,6 +77,10 @@ export async function applySesFeedback(feedback: Feedback): Promise<{ suppressed
     });
     suppressed++;
   }
+  if (feedback.kind === "complaint") {
+    const existing = await prisma.emailEvent.count({ where: { campaignRecipientId: recipient.id, type: "COMPLAINED" } });
+    if (existing === 0) await prisma.emailEvent.create({ data: { ...eventBase, type: "COMPLAINED" } });
+  }
   if (feedback.kind === "bounce" && recipient.status !== "BOUNCED") {
     const updated = await prisma.campaignRecipient.updateMany({
       where: { id: recipient.id, status: { not: "BOUNCED" } },
@@ -66,7 +89,7 @@ export async function applySesFeedback(feedback: Feedback): Promise<{ suppressed
     if (updated.count > 0) {
       await prisma.campaign.update({ where: { id: recipient.campaignId }, data: { totalBounced: { increment: 1 } } });
       await prisma.emailEvent.create({
-        data: { organizationId, campaignId: recipient.campaignId, campaignRecipientId: recipient.id, type: "BOUNCED", occurredAt: now },
+        data: { ...eventBase, type: "BOUNCED" },
       });
     }
   }

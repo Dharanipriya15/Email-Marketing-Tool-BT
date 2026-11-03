@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { Prisma } from "@prisma/client";
-import { requireUser } from "@/lib/auth";
+import { requireAdmin, requireUser } from "@/lib/auth";
 import { contactListFormSchema, type ContactListFormInput } from "@/schemas/contact-list";
 import * as contactListService from "@/services/contact-list-service";
 import { searchContactsNotInList, type SelectableContact } from "@/services/contact-service";
@@ -57,7 +57,8 @@ export async function updateContactListAction(
 }
 
 export async function deleteContactListAction(id: string): Promise<ActionResult> {
-  const user = await requireUser();
+  const { user, error: adminError } = await requireAdmin();
+  if (!user) return { success: false, error: adminError };
 
   try {
     await contactListService.deleteContactList(user.organizationId, id);

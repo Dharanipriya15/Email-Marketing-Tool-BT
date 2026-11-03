@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { Prisma } from "@prisma/client";
-import { requireUser } from "@/lib/auth";
+import { requireAdmin, requireUser } from "@/lib/auth";
 import {
   bulkContactIdsSchema,
   contactFormSchema,
@@ -68,7 +68,8 @@ export async function updateContactAction(
 }
 
 export async function deleteContactsAction(ids: string[]): Promise<ActionResult> {
-  const user = await requireUser();
+  const { user, error: adminError } = await requireAdmin();
+  if (!user) return { success: false, error: adminError };
   const parsedIds = bulkContactIdsSchema.safeParse(ids);
   if (!parsedIds.success) {
     return { success: false, error: "No contacts selected." };

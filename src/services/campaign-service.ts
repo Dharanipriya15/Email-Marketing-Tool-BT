@@ -1,4 +1,5 @@
 import { prisma } from "@/db/client";
+import { assertCompanyAddress } from "@/services/settings-service";
 import type { CampaignStatus, Prisma } from "@prisma/client";
 import type { CampaignFormData } from "@/schemas/campaign";
 
@@ -276,6 +277,7 @@ export async function scheduleCampaign(organizationId: string, id: string, sched
   if (!campaign) throw new CampaignNotFoundError();
   if (campaign.status !== "DRAFT") throw new CampaignNotEditableError(campaign.status);
   if (!campaign.contactListId || !campaign.templateId) throw new CampaignNotReadyError();
+  await assertCompanyAddress(organizationId);
 
   const result = await prisma.campaign.updateMany({
     where: { id, organizationId, status: "DRAFT" },

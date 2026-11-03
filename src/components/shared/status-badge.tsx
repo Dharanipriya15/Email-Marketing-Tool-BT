@@ -50,6 +50,7 @@ const campaignStatusMeta: Record<CampaignStatus, { label: string; tone: StatusTo
   COMPLETED: { label: "Completed", tone: "success" },
   PAUSED: { label: "Paused", tone: "warning" },
   FAILED: { label: "Failed", tone: "destructive" },
+  CANCELLED: { label: "Cancelled", tone: "neutral" },
 };
 
 export function CampaignStatusBadge({ status }: { status: CampaignStatus }) {

@@ -2,10 +2,14 @@
 
 import { revalidatePath } from "next/cache";
 import type { ZodError } from "zod";
-import { requireUser } from "@/lib/auth";
+import { requireAdmin, requireUser } from "@/lib/auth";
 import { checkRateLimit } from "@/lib/rate-limit";
 import { sanitizeEmailHtml } from "@/lib/email-sanitize";
-import { renderPersonalizedEmail } from "@/lib/email-render";
+import { buildEmailFooterText, renderPersonalizedEmail } from "@/lib/email-render";
+import { prisma } from "@/db/client";
+import { getTestAllowlist } from "@/lib/email-sending-config";
+import { isAllowedTestRecipient, TEST_RECIPIENT_NOT_ALLOWED_ERROR } from "@/lib/test-email-recipients";
+import { buildOneClickUnsubscribeUrl, buildUnsubscribePageUrl, createUnsubscribeToken } from "@/lib/unsubscribe-token";
 import { htmlToPlainText } from "@/lib/email-text";
 import { applyPersonalization } from "@/lib/personalization";
 import {
@@ -75,7 +79,8 @@ export async function updateTemplateAction(
 }
 
 export async function deleteTemplateAction(id: string): Promise<ActionResult> {
-  const user = await requireUser();
+  const { user, error: adminError } = await requireAdmin();
+  if (!user) return { success: false, error: adminError };
 
   try {
     await templateService.deleteTemplate(user.organizationId, id);
@@ -133,16 +138,45 @@ export async function sendTestEmailAction(input: SendTestEmailInput): Promise<Ac
     };
   }
 
-  const { subject, previewText, testEmail } = parsed.data;
-  const htmlContent = sanitizeEmailHtml(parsed.data.htmlContent);
-  const rendered = renderPersonalizedEmail({ subject, previewText, htmlContent });
+  const { subject, previewText } = parsed.data;
+  const testEmail = parsed.data.testEmail.trim().toLowerCase();
 
   try {
+    const orgUsers = await prisma.user.findMany({
+      where: { organizationId: user.organizationId },
+      select: { email: true },
+    });
+    if (!isAllowedTestRecipient(testEmail, getTestAllowlist(), orgUsers.map((u) => u.email))) {
+      return { success: false, error: TEST_RECIPIENT_NOT_ALLOWED_ERROR };
+    }
+
+    const htmlContent = sanitizeEmailHtml(parsed.data.htmlContent);
+
+    // Same compliance footer + List-Unsubscribe headers as a real campaign
+    // email, so the test shows exactly what recipients get. The link is real:
+    // clicking it unsubscribes the test address in this organization.
+    const settings = await prisma.settings.findUnique({
+      where: { organizationId: user.organizationId },
+      select: { companyName: true, companyAddress: true, unsubscribeFooterText: true },
+    });
+    const token = createUnsubscribeToken({ organizationId: user.organizationId, email: testEmail });
+    const footer = {
+      unsubscribeUrl: buildUnsubscribePageUrl(token),
+      companyName: settings?.companyName,
+      companyAddress: settings?.companyAddress,
+      footerText: settings?.unsubscribeFooterText,
+    };
+    const rendered = renderPersonalizedEmail({ subject, previewText, htmlContent }, undefined, footer);
+
     const result = await provider.sendEmail({
       to: testEmail,
       subject: `[Test] ${rendered.subject}`,
       html: rendered.html,
-      text: applyPersonalization(htmlToPlainText(htmlContent)),
+      text: applyPersonalization(htmlToPlainText(htmlContent)) + buildEmailFooterText(footer),
+      headers: {
+        "List-Unsubscribe": `<${buildOneClickUnsubscribeUrl(token)}>`,
+        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+      },
     });
     if (!result.success) {
       console.error("Email provider rejected test email:", result.error);

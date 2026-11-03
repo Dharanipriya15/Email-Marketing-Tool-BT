@@ -34,6 +34,7 @@ enum CampaignStatus {
   COMPLETED
   PAUSED
   FAILED
+  CANCELLED
 }
 
 enum CampaignRecipientStatus {
@@ -48,6 +49,7 @@ enum CampaignRecipientStatus {
   FAILED
   UNSUBSCRIBED
   SUPPRESSED
+  CANCELLED
 }
 
 enum EmailEventType {
@@ -58,6 +60,7 @@ enum EmailEventType {
   BOUNCED
   FAILED
   UNSUBSCRIBED
+  COMPLAINED
 }
 
 enum SuppressionReason {

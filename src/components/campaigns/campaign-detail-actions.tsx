@@ -4,11 +4,13 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import type { CampaignStatus } from "@prisma/client";
-import { CalendarX, Copy, Trash2 } from "lucide-react";
+import Link from "next/link";
+import { BarChart3, Ban, CalendarX, Copy, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
 import {
+  cancelCampaignAction,
   deleteCampaignAction,
   duplicateCampaignAction,
   unscheduleCampaignAction,
@@ -16,6 +18,8 @@ import {
 } from "@/app/(app)/campaigns/actions";
 import { SendNowDialog } from "@/components/campaigns/send-now-dialog";
 import type { SendingReadiness } from "@/services/email/provider";
+
+const CANCELLABLE: CampaignStatus[] = ["DRAFT", "SCHEDULED", "SENDING", "PAUSED"];
 
 type CampaignDetailActionsProps = {
   campaignId: string;
@@ -77,6 +81,16 @@ export function CampaignDetailActions({
     }
   }
 
+  async function handleCancel() {
+    const result = await cancelCampaignAction(campaignId);
+    if (result.success) {
+      toast.success(`Campaign cancelled. ${result.data.cancelledRecipients.toLocaleString()} unsent recipient(s) will not be emailed.`);
+      router.refresh();
+    } else {
+      toast.error(result.error);
+    }
+  }
+
   async function handleSendNow(): Promise<boolean> {
     const result = await sendCampaignNowAction(campaignId, "SEND");
     if (!result.success) {
@@ -99,10 +113,33 @@ export function CampaignDetailActions({
           Unschedule
         </Button>
       )}
+      {status !== "DRAFT" && (
+        <Button variant="outline" asChild>
+          <Link href={`/campaigns/${campaignId}/report`}>
+            <BarChart3 />
+            Report
+          </Link>
+        </Button>
+      )}
       <Button variant="outline" onClick={handleDuplicate} disabled={isPending}>
         <Copy />
         Duplicate
       </Button>
+      {CANCELLABLE.includes(status) && (
+        <ConfirmDialog
+          trigger={
+            <Button variant="outline" disabled={isPending}>
+              <Ban />
+              Cancel campaign
+            </Button>
+          }
+          title="Cancel this campaign?"
+          description={`"${campaignName}" will be stopped permanently. Emails already sent are not affected, and no further emails will be sent. This can't be undone (you can duplicate it later).`}
+          confirmLabel="Cancel campaign"
+          cancelLabel="Keep campaign"
+          onConfirm={handleCancel}
+        />
+      )}
       {deletable && (
         <ConfirmDialog
           trigger={

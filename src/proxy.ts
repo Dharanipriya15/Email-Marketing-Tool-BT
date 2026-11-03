@@ -5,8 +5,9 @@ const PUBLIC_PATHS = ["/login"];
 
 // Reachable without a session. Each protects itself: unsubscribe routes
 // verify a signed token, /api/cron requires the CRON_SECRET bearer token, and
-// /api/webhooks verifies SNS message signatures.
-const PUBLIC_PREFIXES = ["/unsubscribe", "/api/unsubscribe", "/api/cron", "/api/webhooks"];
+// /api/webhooks verifies SNS message signatures, and /api/t (open/click
+// tracking) only acts on HMAC-signed links.
+const PUBLIC_PREFIXES = ["/unsubscribe", "/api/unsubscribe", "/api/cron", "/api/webhooks", "/api/t"];
 
 function matchesPrefix(pathname: string, prefix: string): boolean {
   return pathname === prefix || pathname.startsWith(`${prefix}/`);

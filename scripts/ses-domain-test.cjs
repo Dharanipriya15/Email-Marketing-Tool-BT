@@ -1,0 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
+const {SESv2Client,SendEmailCommand}=require('@aws-sdk/client-sesv2');
+const c=new SESv2Client({region:process.env.AWS_SES_REGION,credentials:{accessKeyId:process.env.AWS_SES_ACCESS_KEY_ID,secretAccessKey:process.env.AWS_SES_SECRET_ACCESS_KEY}});
+c.send(new SendEmailCommand({FromEmailAddress:`"${process.env.EMAIL_FROM_NAME}" <${process.env.EMAIL_FROM_ADDRESS}>`,Destination:{ToAddresses:['dharanipriya154@gmail.com']},Content:{Simple:{Subject:{Data:'BoilerTech test email - domain sender'},Body:{Html:{Data:'<p>Hi Dharani,</p><p>This is a test email sent from service@boilertechenergy.com through Amazon SES (production, DKIM verified).</p>'},Text:{Data:'Hi Dharani, this is a test email sent from service@boilertechenergy.com through Amazon SES.'}}}}})).then(r=>console.log('SENT MessageId',r.MessageId)).catch(e=>console.log('ERR',e.name,e.message));

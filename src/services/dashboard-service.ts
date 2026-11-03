@@ -1,6 +1,12 @@
 import { prisma } from "@/db/client";
 import type { CampaignStatus } from "@prisma/client";
 
+// Rate over delivered, or over sent when delivery notifications aren't set up.
+export function rate(count: number, delivered: number, sent: number): number {
+  const base = delivered > 0 ? delivered : sent;
+  return base > 0 ? (count / base) * 100 : 0;
+}
+
 export type DashboardStats = {
   totalContacts: number;
   totalCampaigns: number;
@@ -21,7 +27,9 @@ export async function getDashboardStats(organizationId: string): Promise<Dashboa
   const emailsSent = totals._sum.totalSent ?? 0;
   const delivered = totals._sum.totalDelivered ?? 0;
   const opened = totals._sum.totalOpened ?? 0;
-  const averageOpenRate = delivered > 0 ? (opened / delivered) * 100 : 0;
+  // Without SES delivery notifications, fall back to sent as the base.
+  const base = delivered > 0 ? delivered : emailsSent;
+  const averageOpenRate = base > 0 ? (opened / base) * 100 : 0;
 
   return { totalContacts, totalCampaigns, emailsSent, averageOpenRate };
 }
@@ -64,8 +72,8 @@ export async function getRecentCampaigns(
     status: c.status,
     totalRecipients: c.totalRecipients,
     totalSent: c.totalSent,
-    openRate: c.totalDelivered > 0 ? (c.totalOpened / c.totalDelivered) * 100 : 0,
-    clickRate: c.totalDelivered > 0 ? (c.totalClicked / c.totalDelivered) * 100 : 0,
+    openRate: rate(c.totalOpened, c.totalDelivered, c.totalSent),
+    clickRate: rate(c.totalClicked, c.totalDelivered, c.totalSent),
     createdAt: c.createdAt,
   }));
 }
@@ -82,12 +90,13 @@ export async function getCampaignPerformance(
   limit = 6
 ): Promise<CampaignPerformancePoint[]> {
   const campaigns = await prisma.campaign.findMany({
-    where: { organizationId, totalDelivered: { gt: 0 } },
+    where: { organizationId, OR: [{ totalDelivered: { gt: 0 } }, { totalSent: { gt: 0 } }] },
     orderBy: { createdAt: "desc" },
     take: limit,
     select: {
       id: true,
       name: true,
+      totalSent: true,
       totalDelivered: true,
       totalOpened: true,
       totalClicked: true,
@@ -98,8 +107,8 @@ export async function getCampaignPerformance(
     .map((c) => ({
       id: c.id,
       name: c.name,
-      openRate: (c.totalOpened / c.totalDelivered) * 100,
-      clickRate: (c.totalClicked / c.totalDelivered) * 100,
+      openRate: rate(c.totalOpened, c.totalDelivered, c.totalSent),
+      clickRate: rate(c.totalClicked, c.totalDelivered, c.totalSent),
     }))
     .reverse();
 }

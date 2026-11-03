@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { prisma } from "@/db/client";
+import { ADMIN_REQUIRED_ERROR, isAdminRole } from "@/lib/roles";
 import {
   SESSION_COOKIE_NAME,
   SESSION_DURATION_SECONDS,
@@ -57,5 +58,24 @@ export async function requireUser() {
   if (!user) {
     redirect("/login");
   }
+  return user;
+}
+
+export type CurrentUser = NonNullable<Awaited<ReturnType<typeof getCurrentUser>>>;
+
+// For server actions: redirects to /login when signed out, and returns an
+// error (instead of throwing) when the signed-in user isn't an admin, so the
+// action can hand it back as an ActionResult. The role is read fresh from the
+// database on every call.
+export async function requireAdmin(): Promise<{ user: CurrentUser; error: null } | { user: null; error: string }> {
+  const user = await requireUser();
+  if (!isAdminRole(user.role)) return { user: null, error: ADMIN_REQUIRED_ERROR };
+  return { user, error: null };
+}
+
+// For admin-only pages: non-admins are sent back to /settings.
+export async function requireAdminPage(): Promise<CurrentUser> {
+  const user = await requireUser();
+  if (!isAdminRole(user.role)) redirect("/settings");
   return user;
 }

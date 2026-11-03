@@ -5,7 +5,7 @@ const prismaMock = vi.hoisted(() => ({
   suppression: { upsert: vi.fn() },
   contact: { updateMany: vi.fn() },
   campaign: { update: vi.fn() },
-  emailEvent: { create: vi.fn() },
+  emailEvent: { create: vi.fn(), count: vi.fn() },
 }));
 vi.mock("@/db/client", () => ({ prisma: prismaMock }));
 
@@ -48,5 +48,33 @@ describe("applySesFeedback", () => {
     prismaMock.campaignRecipient.findFirst.mockResolvedValue(null);
     expect(await applySesFeedback({ kind: "complaint", messageId: "zz", emails: ["a@b.c"] })).toEqual({ suppressed: 0 });
     expect(prismaMock.suppression.upsert).not.toHaveBeenCalled();
+  });
+
+  it("parses deliveries and records them once", async () => {
+    const raw = JSON.stringify({ notificationType: "Delivery", mail: { messageId: "m-9" }, delivery: { recipients: ["a@b.c"] } });
+    expect(parseSesFeedback(raw)).toEqual({ kind: "delivery", messageId: "m-9", emails: ["a@b.c"] });
+    prismaMock.campaignRecipient.findFirst.mockResolvedValue({ id: "r1", organizationId: "org", campaignId: "c1", contactId: null, email: "a@b.c", status: "SENT" });
+    prismaMock.campaignRecipient.updateMany.mockResolvedValue({ count: 1 });
+    expect(await applySesFeedback({ kind: "delivery", messageId: "m-9", emails: [] })).toEqual({ suppressed: 0 });
+    expect(prismaMock.campaign.update.mock.calls[0][0].data).toEqual({ totalDelivered: { increment: 1 } });
+    expect(prismaMock.emailEvent.create.mock.calls[0][0].data.type).toBe("DELIVERED");
+    expect(prismaMock.suppression.upsert).not.toHaveBeenCalled();
+
+    vi.clearAllMocks();
+    prismaMock.campaignRecipient.updateMany.mockResolvedValue({ count: 0 });
+    await applySesFeedback({ kind: "delivery", messageId: "m-9", emails: [] });
+    expect(prismaMock.campaign.update).not.toHaveBeenCalled();
+  });
+
+  it("records a complaint event once and suppresses", async () => {
+    prismaMock.campaignRecipient.findFirst.mockResolvedValue({ id: "r1", organizationId: "org", campaignId: "c1", contactId: null, email: "a@b.c", status: "SENT" });
+    prismaMock.emailEvent.count.mockResolvedValue(0);
+    await applySesFeedback({ kind: "complaint", messageId: "m-1", emails: ["a@b.c"] });
+    expect(prismaMock.emailEvent.create.mock.calls[0][0].data.type).toBe("COMPLAINED");
+    expect(prismaMock.suppression.upsert.mock.calls[0][0].create.reason).toBe("COMPLAINED");
+    vi.clearAllMocks();
+    prismaMock.emailEvent.count.mockResolvedValue(1);
+    await applySesFeedback({ kind: "complaint", messageId: "m-1", emails: ["a@b.c"] });
+    expect(prismaMock.emailEvent.create).not.toHaveBeenCalled();
   });
 });

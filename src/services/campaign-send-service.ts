@@ -21,8 +21,10 @@ import {
   isSendingEnabled,
 } from "@/lib/email-sending-config";
 import { withDbRetry } from "@/lib/db-retry";
+import { chunked } from "@/lib/chunk";
 import { buildEmailFooterText, renderPersonalizedEmail } from "@/lib/email-render";
 import { htmlToPlainText } from "@/lib/email-text";
+import { applyTracking } from "@/lib/tracking";
 import { applyPersonalization } from "@/lib/personalization";
 import {
   buildOneClickUnsubscribeUrl,
@@ -31,9 +33,11 @@ import {
 } from "@/lib/unsubscribe-token";
 import { eligibleContactsWhere, getBlockedEmails } from "@/services/campaign-service";
 import { getEmailProvider, type EmailProvider } from "@/services/email/provider";
+import { assertCompanyAddress } from "@/services/settings-service";
 
 export const MAX_SEND_ATTEMPTS = 3;
 const PREPARABLE_STATUSES: CampaignStatus[] = ["DRAFT", "SCHEDULED"];
+export const RECIPIENT_INSERT_CHUNK_SIZE = 1000;
 
 export class SendingDisabledError extends Error {
   constructor() {
@@ -89,6 +93,7 @@ export async function prepareCampaign(
   if (!campaign) throw new CampaignNotSendableError("not_found");
   if (!PREPARABLE_STATUSES.includes(campaign.status)) throw new CampaignNotSendableError("wrong_status");
   if (!campaign.contactListId || !campaign.templateId) throw new CampaignNotSendableError("missing_content");
+  await assertCompanyAddress(organizationId);
 
   const blockedEmails = await getBlockedEmails(organizationId);
   const contacts = await prisma.contact.findMany({
@@ -101,27 +106,44 @@ export async function prepareCampaign(
   const cap = getMaxCampaignRecipients();
   if (contacts.length > cap) throw new RecipientCapExceededError(contacts.length, cap);
 
-  await prisma.$transaction(async (tx) => {
-    // Guarded claim: only one caller can move this campaign into SENDING.
-    const claimed = await tx.campaign.updateMany({
-      where: { id: campaignId, organizationId, status: { in: PREPARABLE_STATUSES } },
-      data: { status: "SENDING", sentAt: new Date(), totalRecipients: contacts.length },
-    });
-    if (claimed.count === 0) throw new CampaignNotSendableError("wrong_status");
+  const rows = contacts.map((contact) => ({
+    organizationId,
+    campaignId,
+    contactId: contact.id,
+    email: contact.email.toLowerCase(),
+    firstName: contact.firstName,
+    lastName: contact.lastName,
+    status: "PENDING" as const,
+  }));
 
-    await tx.campaignRecipient.createMany({
-      data: contacts.map((contact) => ({
-        organizationId,
-        campaignId,
-        contactId: contact.id,
-        email: contact.email.toLowerCase(),
-        firstName: contact.firstName,
-        lastName: contact.lastName,
-        status: "PENDING" as const,
-      })),
-      skipDuplicates: true,
-    });
+  // Snapshot in chunks, outside one long interactive transaction. While the
+  // campaign is still DRAFT/SCHEDULED these PENDING rows are inert: the
+  // batch sender and the dispatcher only send for SENDING campaigns. The
+  // @@unique([campaignId, email]) constraint + skipDuplicates makes a retry
+  // after a partial failure idempotent.
+  for (const chunk of chunked(rows, RECIPIENT_INSERT_CHUNK_SIZE)) {
+    await withDbRetry(() => prisma.campaignRecipient.createMany({ data: chunk, skipDuplicates: true }));
+  }
+
+  // Drop PENDING leftovers from an earlier failed attempt for contacts that
+  // are no longer eligible (removed from the list, unsubscribed, ...).
+  const wanted = new Set(rows.map((row) => row.email));
+  const existing = await prisma.campaignRecipient.findMany({
+    where: { campaignId, status: "PENDING" },
+    select: { id: true, email: true },
   });
+  const staleIds = (existing ?? []).filter((row) => !wanted.has(row.email)).map((row) => row.id);
+  for (const chunk of chunked(staleIds, RECIPIENT_INSERT_CHUNK_SIZE)) {
+    await prisma.campaignRecipient.deleteMany({ where: { id: { in: chunk }, campaignId, status: "PENDING" } });
+  }
+
+  // Guarded claim: only one caller can move this campaign into SENDING, and
+  // only after the full snapshot exists.
+  const claimed = await prisma.campaign.updateMany({
+    where: { id: campaignId, organizationId, status: { in: PREPARABLE_STATUSES } },
+    data: { status: "SENDING", sentAt: new Date(), totalRecipients: rows.length },
+  });
+  if (claimed.count === 0) throw new CampaignNotSendableError("wrong_status");
 
   return { totalRecipients: contacts.length };
 }
@@ -172,7 +194,9 @@ export async function processCampaignBatch(campaignId: string, options: BatchOpt
       organization: {
         select: {
           name: true,
-          settings: { select: { companyName: true, companyAddress: true, unsubscribeFooterText: true } },
+          settings: {
+            select: { companyName: true, companyAddress: true, unsubscribeFooterText: true, trackOpens: true, trackClicks: true },
+          },
         },
       },
     },
@@ -271,6 +295,12 @@ export async function processCampaignBatch(campaignId: string, options: BatchOpt
         data,
         footer
       );
+      // Settings default to tracking on (schema default true).
+      const html = applyTracking(rendered.html, recipient.id, {
+        trackOpens: settings?.trackOpens ?? true,
+        trackClicks: settings?.trackClicks ?? true,
+        skipUrls: [footer.unsubscribeUrl, buildOneClickUnsubscribeUrl(token)],
+      });
       const text =
         applyPersonalization(htmlToPlainText(campaign.template.htmlContent), data) + buildEmailFooterText(footer);
 
@@ -285,7 +315,7 @@ export async function processCampaignBatch(campaignId: string, options: BatchOpt
           to: recipient.email,
           toName: [recipient.firstName, recipient.lastName].filter(Boolean).join(" ") || undefined,
           subject: rendered.subject,
-          html: rendered.html,
+          html,
           text,
           headers: {
             "List-Unsubscribe": `<${buildOneClickUnsubscribeUrl(token)}>`,
@@ -371,6 +401,37 @@ export async function resumeCampaign(organizationId: string, campaignId: string)
   return result.count > 0;
 }
 
+// ---------------------------------------------------------------------------
+// Cancel
+// ---------------------------------------------------------------------------
+
+export const CANCELLABLE_STATUSES: CampaignStatus[] = ["DRAFT", "SCHEDULED", "SENDING", "PAUSED"];
+export const CANCELLED_RECIPIENT_NOTE = "Cancelled by admin before sending";
+
+// Permanently stops a campaign. The campaign is flipped to CANCELLED first so
+// the dispatcher and any running batch stop picking it up (both only send for
+// SENDING campaigns), then every not-yet-sent recipient is marked CANCELLED.
+// A recipient already claimed (SENDING) by an in-flight batch is left to
+// finish so its real outcome is recorded. Nothing is deleted.
+export async function cancelCampaign(
+  organizationId: string,
+  campaignId: string
+): Promise<{ cancelled: boolean; cancelledRecipients: number }> {
+  const claimed = await prisma.campaign.updateMany({
+    where: { id: campaignId, organizationId, status: { in: CANCELLABLE_STATUSES } },
+    data: { status: "CANCELLED", completedAt: new Date() },
+  });
+  if (claimed.count === 0) return { cancelled: false, cancelledRecipients: 0 };
+
+  const recipients = await withDbRetry(() =>
+    prisma.campaignRecipient.updateMany({
+      where: { campaignId, organizationId, status: { in: ["PENDING", "QUEUED"] } },
+      data: { status: "CANCELLED", lastError: CANCELLED_RECIPIENT_NOTE },
+    })
+  );
+  return { cancelled: true, cancelledRecipients: recipients.count };
+}
+
 export type CampaignProgress = {
   pending: number;
   sent: number;
@@ -391,7 +452,7 @@ export async function getCampaignProgress(organizationId: string, campaignId: st
     progress.total += count;
     if (group.status === "PENDING" || group.status === "QUEUED" || group.status === "SENDING") progress.pending += count;
     else if (group.status === "FAILED" || group.status === "BOUNCED") progress.failed += count;
-    else if (group.status === "SUPPRESSED" || group.status === "UNSUBSCRIBED") progress.skipped += count;
+    else if (group.status === "SUPPRESSED" || group.status === "UNSUBSCRIBED" || group.status === "CANCELLED") progress.skipped += count;
     else progress.sent += count;
   }
   return progress;

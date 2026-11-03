@@ -57,7 +57,7 @@ export default async function ReportsPage({ searchParams }: ReportsPageProps) {
   const byStatus = Object.entries(overview.campaignsByStatus)
     .map(([status, count]) => `${count} ${status.toLowerCase()}`)
     .join(", ");
-  const tracking = "Tracking coming soon";
+  const tracking = "Unique recipients";
 
   return (
     <div className="flex flex-col gap-6">
@@ -86,7 +86,7 @@ export default async function ReportsPage({ searchParams }: ReportsPageProps) {
         <StatTile label="Active contacts" value={n(overview.activeContacts)} />
         <StatTile label="Opened" value={n(overview.opened)} hint={tracking} />
         <StatTile label="Clicked" value={n(overview.clicked)} hint={tracking} />
-        <StatTile label="Bounced" value={n(overview.bounced)} hint={tracking} />
+        <StatTile label="Bounced" value={n(overview.bounced)} hint="Permanent bounces (SES)" />
       </div>
 
       <section className="flex flex-col gap-3">
