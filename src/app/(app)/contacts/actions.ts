@@ -21,6 +21,13 @@ function isUniqueConstraintError(error: unknown): boolean {
   );
 }
 
+function revalidateListMembershipPaths(listId: string) {
+  revalidatePath("/contacts");
+  revalidatePath("/contacts/[id]", "page");
+  revalidatePath("/lists");
+  revalidatePath(`/lists/${listId}`);
+}
+
 export async function createContactAction(
   input: ContactFormInput
 ): Promise<ActionResult<{ id: string }>> {
@@ -88,7 +95,7 @@ export async function deleteContactsAction(ids: string[]): Promise<ActionResult>
 export async function addContactsToListAction(
   contactIds: string[],
   listId: string
-): Promise<ActionResult> {
+): Promise<ActionResult<contactService.AddToListResult>> {
   const user = await requireUser();
   const parsedIds = bulkContactIdsSchema.safeParse(contactIds);
   const parsedListId = listIdSchema.safeParse(listId);
@@ -97,9 +104,13 @@ export async function addContactsToListAction(
   }
 
   try {
-    await contactService.addContactsToList(user.organizationId, parsedIds.data, parsedListId.data);
-    revalidatePath("/contacts");
-    return { success: true, data: undefined };
+    const result = await contactService.addContactsToList(
+      user.organizationId,
+      parsedIds.data,
+      parsedListId.data
+    );
+    revalidateListMembershipPaths(parsedListId.data);
+    return { success: true, data: result };
   } catch (error) {
     console.error("Failed to add contacts to list:", error);
     return { success: false, error: GENERIC_ERROR };
@@ -119,7 +130,7 @@ export async function removeContactsFromListAction(
 
   try {
     await contactService.removeContactsFromList(user.organizationId, parsedIds.data, parsedListId.data);
-    revalidatePath("/contacts");
+    revalidateListMembershipPaths(parsedListId.data);
     return { success: true, data: undefined };
   } catch (error) {
     console.error("Failed to remove contacts from list:", error);

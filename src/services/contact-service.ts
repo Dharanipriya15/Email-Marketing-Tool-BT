@@ -192,26 +192,55 @@ export async function deleteContacts(organizationId: string, ids: string[]) {
   await prisma.contact.deleteMany({ where: { id: { in: ids }, organizationId } });
 }
 
+export type AddToListResult = {
+  added: number;
+  // Not ACTIVE, suppressed for this org, or not found in this org.
+  skipped: number;
+  alreadyInList: number;
+};
+
+// Only ACTIVE, non-suppressed contacts in this org are added to the list.
 export async function addContactsToList(
   organizationId: string,
   contactIds: string[],
   contactListId: string
-) {
+): Promise<AddToListResult> {
   const list = await prisma.contactList.findFirst({
     where: { id: contactListId, organizationId },
     select: { id: true },
   });
   if (!list) throw new Error("List not found.");
 
+  const uniqueIds = Array.from(new Set(contactIds));
   const contacts = await prisma.contact.findMany({
-    where: { id: { in: contactIds }, organizationId },
-    select: { id: true },
+    where: { id: { in: uniqueIds }, organizationId, status: "ACTIVE" },
+    select: { id: true, email: true },
   });
 
-  await prisma.contactListMember.createMany({
-    data: contacts.map((c) => ({ contactId: c.id, contactListId })),
-    skipDuplicates: true,
-  });
+  const suppressed = contacts.length
+    ? await prisma.suppression.findMany({
+        where: {
+          organizationId,
+          email: { in: contacts.map((c) => c.email), mode: "insensitive" },
+        },
+        select: { email: true },
+      })
+    : [];
+  const suppressedEmails = new Set(suppressed.map((s) => s.email.toLowerCase()));
+  const eligible = contacts.filter((c) => !suppressedEmails.has(c.email.toLowerCase()));
+
+  const { count: added } = eligible.length
+    ? await prisma.contactListMember.createMany({
+        data: eligible.map((c) => ({ contactId: c.id, contactListId })),
+        skipDuplicates: true,
+      })
+    : { count: 0 };
+
+  return {
+    added,
+    skipped: uniqueIds.length - eligible.length,
+    alreadyInList: eligible.length - added,
+  };
 }
 
 export async function removeContactsFromList(

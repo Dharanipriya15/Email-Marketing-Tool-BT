@@ -6,13 +6,18 @@ import { PageHeader } from "@/components/shared/page-header";
 import { EmptyState } from "@/components/shared/empty-state";
 import {
   Card,
+  CardAction,
   CardContent,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { ContactStatusBadge } from "@/components/shared/status-badge";
 import { ContactDetailActions } from "@/components/contacts/contact-detail-actions";
+import {
+  ContactListBadges,
+  ContactListsAddButton,
+} from "@/components/contacts/contact-lists-card-actions";
+import { listContactListOptions } from "@/services/contact-list-service";
 import {
   getContactDetail,
   getContactRecentEvents,
@@ -39,7 +44,11 @@ export default async function ContactDetailPage({ params }: ContactDetailPagePro
     notFound();
   }
 
-  const events = await getContactRecentEvents(user.organizationId, id);
+  const [events, allLists] = await Promise.all([
+    getContactRecentEvents(user.organizationId, id),
+    listContactListOptions(user.organizationId),
+  ]);
+  const memberships = contact.listMemberships.map((m) => m.contactList);
   const name = [contact.firstName, contact.lastName].filter(Boolean).join(" ") || contact.email;
 
   return (
@@ -98,21 +107,16 @@ export default async function ContactDetailPage({ params }: ContactDetailPagePro
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Lists</CardTitle>
+            <CardAction>
+              <ContactListsAddButton
+                contactId={contact.id}
+                memberships={memberships}
+                allLists={allLists}
+              />
+            </CardAction>
           </CardHeader>
           <CardContent>
-            {contact.listMemberships.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                Not part of any list yet.
-              </p>
-            ) : (
-              <div className="flex flex-wrap gap-2">
-                {contact.listMemberships.map((membership) => (
-                  <Badge key={membership.contactList.id} variant="secondary">
-                    {membership.contactList.name}
-                  </Badge>
-                ))}
-              </div>
-            )}
+            <ContactListBadges contactId={contact.id} memberships={memberships} />
           </CardContent>
         </Card>
       </div>

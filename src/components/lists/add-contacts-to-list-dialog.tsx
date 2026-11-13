@@ -18,6 +18,7 @@ import {
 import { EmptyState } from "@/components/shared/empty-state";
 import { searchContactsForListAction } from "@/app/(app)/lists/actions";
 import { addContactsToListAction } from "@/app/(app)/contacts/actions";
+import { formatAddToListResult } from "@/lib/list-membership";
 import type { SelectableContact } from "@/services/contact-service";
 
 type AddContactsToListDialogProps = {
@@ -84,7 +85,7 @@ export function AddContactsToListDialog({
     startSave(async () => {
       const result = await addContactsToListAction(Array.from(selected), listId);
       if (result.success) {
-        toast.success(`Added ${selected.size} contact(s) to list`);
+        toast.success(formatAddToListResult(result.data));
         onOpenChange(false);
       } else {
         toast.error(result.error);

@@ -21,6 +21,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { addContactsToListAction } from "@/app/(app)/contacts/actions";
+import { formatAddToListResult } from "@/lib/list-membership";
 import { createContactListAction } from "@/app/(app)/lists/actions";
 import type { ContactListRow } from "@/services/contact-list-service";
 
@@ -52,7 +53,7 @@ export function PostImportListPanel({
         }
         const result = await addContactsToListAction(importedContactIds, existingListId);
         if (result.success) {
-          toast.success("Contacts added to list");
+          toast.success(formatAddToListResult(result.data));
           setDone(true);
         } else {
           toast.error(result.error);
@@ -78,7 +79,9 @@ export function PostImportListPanel({
           createResult.data.id
         );
         if (addResult.success) {
-          toast.success(`List "${newListName.trim()}" created and contacts added`);
+          toast.success(
+            `List "${newListName.trim()}" created. ${formatAddToListResult(addResult.data)}`
+          );
           setDone(true);
         } else {
           toast.error(addResult.error);

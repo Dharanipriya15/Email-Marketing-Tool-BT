@@ -29,6 +29,16 @@ export async function listContactLists(organizationId: string): Promise<ContactL
   }));
 }
 
+export async function listContactListOptions(
+  organizationId: string
+): Promise<{ id: string; name: string }[]> {
+  return prisma.contactList.findMany({
+    where: { organizationId },
+    select: { id: true, name: true },
+    orderBy: { name: "asc" },
+  });
+}
+
 export type ContactListSummary = {
   totalLists: number;
   totalContactsAcrossLists: number;

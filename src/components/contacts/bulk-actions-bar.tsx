@@ -1,22 +1,11 @@
 "use client";
 
-import { useState, useTransition } from "react";
 import { toast } from "sonner";
 import { ListPlus, ListMinus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { ConfirmDialog } from "@/components/shared/confirm-dialog";
+import { ListPickerPopover } from "@/components/lists/list-picker-popover";
+import { formatAddToListResult } from "@/lib/list-membership";
 import {
   addContactsToListAction,
   removeContactsFromListAction,
@@ -29,67 +18,11 @@ type BulkActionsBarProps = {
   onDone: () => void;
 };
 
-function ListPickerPopover({
-  label,
-  icon: Icon,
-  lists,
-  onConfirm,
-}: {
-  label: string;
-  icon: React.ComponentType<{ className?: string }>;
-  lists: { id: string; name: string }[];
-  onConfirm: (listId: string) => Promise<void>;
-}) {
-  const [open, setOpen] = useState(false);
-  const [listId, setListId] = useState<string>("");
-  const [isPending, startTransition] = useTransition();
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button variant="outline" size="sm" disabled={lists.length === 0}>
-          <Icon className="size-4" />
-          {label}
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-64" align="start">
-        <div className="flex flex-col gap-3">
-          <Select value={listId} onValueChange={setListId}>
-            <SelectTrigger className="w-full">
-              <SelectValue placeholder="Choose a list" />
-            </SelectTrigger>
-            <SelectContent>
-              {lists.map((list) => (
-                <SelectItem key={list.id} value={list.id}>
-                  {list.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Button
-            size="sm"
-            disabled={!listId || isPending}
-            onClick={() =>
-              startTransition(async () => {
-                await onConfirm(listId);
-                setOpen(false);
-                setListId("");
-              })
-            }
-          >
-            {isPending ? "Please wait..." : "Confirm"}
-          </Button>
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
-}
-
 export function BulkActionsBar({ selectedIds, lists, onDone }: BulkActionsBarProps) {
   async function handleAddToList(listId: string) {
     const result = await addContactsToListAction(selectedIds, listId);
     if (result.success) {
-      toast.success(`Added ${selectedIds.length} contact(s) to list`);
+      toast.success(formatAddToListResult(result.data));
       onDone();
     } else {
       toast.error(result.error);
@@ -123,13 +56,13 @@ export function BulkActionsBar({ selectedIds, lists, onDone }: BulkActionsBarPro
       </span>
       <div className="ml-auto flex flex-wrap items-center gap-2">
         <ListPickerPopover
-          label="Add to List"
+          label="Add to list"
           icon={ListPlus}
           lists={lists}
           onConfirm={handleAddToList}
         />
         <ListPickerPopover
-          label="Remove from List"
+          label="Remove from list"
           icon={ListMinus}
           lists={lists}
           onConfirm={handleRemoveFromList}
