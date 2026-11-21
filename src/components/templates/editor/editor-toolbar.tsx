@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { useEditorState, type Editor } from "@tiptap/react";
 import {
   AlignCenter,
@@ -27,6 +28,7 @@ import {
   ImagePopover,
   LinkPopover,
 } from "@/components/templates/editor/editor-popovers";
+import { ImagesPanel, InsertImageButton } from "@/components/templates/editor/template-images";
 import { EMAIL_BUTTON_NODE, SMALL_TEXT_SIZE } from "@/components/templates/editor/extensions";
 import { PersonalizeMenu } from "@/components/templates/personalize-menu";
 import type { EmailButtonAlign } from "@/lib/email-button";
@@ -70,7 +72,16 @@ function ToolbarDivider() {
   return <Separator orientation="vertical" className="mx-1 h-6!" />;
 }
 
-export function EditorToolbar({ editor }: { editor: Editor }) {
+type EditorToolbarProps = {
+  editor: Editor;
+  canDeleteImages: boolean;
+};
+
+export function EditorToolbar({ editor, canDeleteImages }: EditorToolbarProps) {
+  // Lifted so a freshly inserted image can open its settings for alt text.
+  const [imageSettingsOpen, setImageSettingsOpen] = useState(false);
+  const openImageSettings = () => setImageSettingsOpen(true);
+
   const state = useEditorState({
     editor,
     selector: ({ editor: e }) => ({
@@ -186,7 +197,14 @@ export function EditorToolbar({ editor }: { editor: Editor }) {
 
       <ToolbarDivider />
 
-      <ImagePopover editor={editor} active={state.isImage} />
+      <InsertImageButton editor={editor} onInserted={openImageSettings} />
+      <ImagePopover
+        editor={editor}
+        active={state.isImage}
+        open={imageSettingsOpen}
+        onOpenChange={setImageSettingsOpen}
+      />
+      <ImagesPanel editor={editor} onInserted={openImageSettings} canDelete={canDeleteImages} />
       <ButtonPopover editor={editor} active={state.isButton} />
       <ToolbarButton label="Divider" onClick={() => editor.chain().focus().setHorizontalRule().run()}>
         <Minus />

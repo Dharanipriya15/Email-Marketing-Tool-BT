@@ -1,4 +1,4 @@
-import { Extension, Node } from "@tiptap/core";
+import { Extension, Node, type Editor } from "@tiptap/core";
 import Image from "@tiptap/extension-image";
 import {
   EMAIL_BUTTON_DEFAULTS,
@@ -57,7 +57,32 @@ export const EmailButton = Node.create({
 
 // Inline images live inside paragraphs, so the paragraph's text alignment
 // positions them — the most portable way to align images in email.
-export const EmailImage = Image.configure({ inline: true, allowBase64: false });
+// The `style` attribute is kept so responsive sizing set on insert
+// (max-width:100%;height:auto;) survives in the saved HTML.
+export const EmailImage = Image.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      style: {
+        default: null,
+        parseHTML: (element) => element.getAttribute("style"),
+        renderHTML: (attributes) => (attributes.style ? { style: attributes.style } : {}),
+      },
+    };
+  },
+}).configure({ inline: true, allowBase64: false });
+
+export const IMAGE_NODE = "image";
+
+// Inserts an image at the cursor (replacing any selection) and selects it,
+// so its settings (alt text, width) can be edited straight away.
+export function insertImageAtCursor(editor: Editor, attrs: { src: string; alt?: string; style?: string }) {
+  const from = editor.state.selection.from;
+  editor.chain().focus().insertContent({ type: IMAGE_NODE, attrs }).run();
+  // Inserting between blocks wraps the image in a new paragraph, shifting it by one.
+  const pos = [from, from + 1].find((p) => editor.state.doc.nodeAt(p)?.type.name === IMAGE_NODE);
+  if (pos !== undefined) editor.commands.setNodeSelection(pos);
+}
 
 // "Small text" paragraph style for footers and fine print.
 export const SmallText = Extension.create({

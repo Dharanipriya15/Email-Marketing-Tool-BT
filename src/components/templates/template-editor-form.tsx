@@ -35,6 +35,7 @@ type TemplateEditorFormProps = {
   defaultValues: TemplateFormInput;
   emailConfigured: boolean;
   userEmail?: string;
+  canDeleteImages?: boolean;
 };
 
 // Warns before closing/reloading the tab with unsaved edits.
@@ -54,6 +55,7 @@ export function TemplateEditorForm({
   defaultValues,
   emailConfigured,
   userEmail,
+  canDeleteImages = false,
 }: TemplateEditorFormProps) {
   const router = useRouter();
   const [serverError, setServerError] = useState<string | null>(null);
@@ -239,6 +241,7 @@ export function TemplateEditorForm({
               <FormControl>
                 <EmailEditor
                   initialContent={defaultValues.htmlContent}
+                  canDeleteImages={canDeleteImages}
                   onChange={(html) =>
                     form.setValue("htmlContent", html, { shouldValidate: true, shouldDirty: true })
                   }

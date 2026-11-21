@@ -19,6 +19,7 @@ import {
   type TemplateFormInput,
 } from "@/schemas/template";
 import * as templateService from "@/services/template-service";
+import * as templateImageService from "@/services/template-image-service";
 import { getEmailProvider, EMAIL_NOT_CONFIGURED_MESSAGE } from "@/services/email/provider";
 import type { ActionResult } from "@/types/action";
 
@@ -185,6 +186,38 @@ export async function sendTestEmailAction(input: SendTestEmailInput): Promise<Ac
     return { success: true, data: undefined };
   } catch (error) {
     console.error("Failed to send test email:", error);
+    return { success: false, error: GENERIC_ERROR };
+  }
+}
+
+// Image uploads go through /api/templates/images (larger request bodies);
+// listing and deleting are plain actions.
+export async function listTemplateImagesAction(): Promise<
+  ActionResult<templateImageService.TemplateImageSummary[]>
+> {
+  const user = await requireUser();
+  try {
+    return { success: true, data: await templateImageService.listTemplateImages(user.organizationId) };
+  } catch (error) {
+    console.error("Failed to list template images:", error);
+    return { success: false, error: "Your images couldn't be loaded. Please try again." };
+  }
+}
+
+// Admin-only, like deleting a template: emails that were already sent keep
+// pointing at the file, so deleting it breaks the image in those emails.
+export async function deleteTemplateImageAction(id: string): Promise<ActionResult> {
+  const { user, error: adminError } = await requireAdmin();
+  if (!user) return { success: false, error: adminError };
+
+  try {
+    await templateImageService.deleteTemplateImage(user.organizationId, id);
+    return { success: true, data: undefined };
+  } catch (error) {
+    if (error instanceof templateImageService.TemplateImageNotFoundError) {
+      return { success: false, error: "This image no longer exists. It may have been deleted." };
+    }
+    console.error("Failed to delete template image:", error);
     return { success: false, error: GENERIC_ERROR };
   }
 }

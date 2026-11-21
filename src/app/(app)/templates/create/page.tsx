@@ -1,4 +1,5 @@
 import { requireUser } from "@/lib/auth";
+import { isAdminRole } from "@/lib/roles";
 import { TemplateEditorForm } from "@/components/templates/template-editor-form";
 import { getStarterTemplateHtml } from "@/services/template-service";
 import { isEmailProviderConfigured } from "@/services/email/provider";
@@ -14,6 +15,7 @@ export default async function CreateTemplatePage() {
       defaultValues={{ name: "", subject: "", previewText: "", htmlContent: starterHtml }}
       emailConfigured={isEmailProviderConfigured()}
       userEmail={user.email}
+      canDeleteImages={isAdminRole(user.role)}
     />
   );
 }

@@ -13,6 +13,7 @@ type EmailEditorProps = {
   initialContent: string;
   onChange: (html: string) => void;
   className?: string;
+  canDeleteImages?: boolean;
   // Passed through by <FormControl> so the label and error message are
   // associated with the editable area.
   id?: string;
@@ -24,6 +25,7 @@ export function EmailEditor({
   initialContent,
   onChange,
   className,
+  canDeleteImages = false,
   id,
   "aria-describedby": ariaDescribedBy,
   "aria-invalid": ariaInvalid,
@@ -90,7 +92,7 @@ export function EmailEditor({
         className
       )}
     >
-      {editor ? <EditorToolbar editor={editor} /> : <Skeleton className="h-11 rounded-none" />}
+      {editor ? <EditorToolbar editor={editor} canDeleteImages={canDeleteImages} /> : <Skeleton className="h-11 rounded-none" />}
       {/* The canvas mimics the inbox: a centered, email-width white card. */}
       <div className="max-h-[70vh] overflow-y-auto bg-[#f4f4f5] p-3 sm:p-6">
         <div className="mx-auto w-full max-w-[600px] overflow-hidden rounded-md bg-white shadow-sm ring-1 ring-black/5">

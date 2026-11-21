@@ -84,6 +84,7 @@ model Organization {
   contacts           Contact[]
   contactLists       ContactList[]
   templates          EmailTemplate[]
+  templateImages     TemplateImage[]
   campaigns          Campaign[]
   suppressions       Suppression[]
   unsubscribes       Unsubscribe[]
@@ -185,6 +186,23 @@ model EmailTemplate {
   campaigns    Campaign[]
 
   @@index([organizationId])
+}
+
+// Images uploaded from the template editor. The file lives on local disk at
+// <UPLOAD_DIR>/<organizationId>/<filename>; `url` is the absolute public URL
+// embedded in email HTML (built from APP_URL at upload time).
+model TemplateImage {
+  id             String   @id @default(cuid())
+  organizationId String
+  filename       String
+  url            String
+  size           Int
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, filename])
+  @@index([organizationId, createdAt])
 }
 
 // ---------------------------------------------------------------------------

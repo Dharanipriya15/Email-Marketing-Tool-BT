@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/auth";
+import { isAdminRole } from "@/lib/roles";
 import { TemplateEditorForm } from "@/components/templates/template-editor-form";
 import { getTemplate } from "@/services/template-service";
 import { isEmailProviderConfigured } from "@/services/email/provider";
@@ -32,6 +33,7 @@ export default async function EditTemplatePage({ params }: EditTemplatePageProps
       }}
       emailConfigured={isEmailProviderConfigured()}
       userEmail={user.email}
+      canDeleteImages={isAdminRole(user.role)}
     />
   );
 }
